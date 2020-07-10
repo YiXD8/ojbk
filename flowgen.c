@@ -264,19 +264,19 @@ static void
 recv_grant_request(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr);
 
 static void
-recv_grant(struct tcp_hdr *transport_recv_hdr);
+recv_grant(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr);
 
 static void
-recv_data(struct tcp_hdr *transport_recv_hdr);
+recv_data(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr);
 
 static void
-recv_oppo_pkt(struct tcp_hdr *transport_recv_hdr);
+recv_oppo_pkt(struct tcp_hdr *transport_recv_hdr,struct ipv4_hdr* ipv4_hdr);
 
 static void
 recv_resend_request(struct tcp_hdr *transport_recv_hdr);
 
 static void
-process_ack(struct tcp_hdr* transport_recv_hdr);
+process_ack(struct tcp_hdr* transport_recv_hdr, struct ipv4_hdr *ipv4_hdr);
 
 static void
 construct_sync(int dst_server_id);
@@ -960,7 +960,7 @@ construct_data(uint32_t flow_id, int data_type)
 
     /* Data type (data_type): 
         0 normal data pkt
-        2 opportunistic pkt/
+        2 opportunistic pkt*/
     if (data_type < 2)
         pkt_size = DEFAULT_PKT_SIZE;
     else
@@ -1090,7 +1090,7 @@ construct_resend_request(uint32_t flow_id, uint32_t resend_size)
     transport_hdr->dst_port           = rte_cpu_to_be_16(receiver_flows[flow_id].dst_port);
     transport_hdr->sent_seq           = rte_cpu_to_be_32(receiver_flows[flow_id].data_seqnum);
     transport_hdr->recv_ack           = 0;
-    transport_hdr->PKT_TYPE_8BITS     = PT_HOMA_RESEND_REQUEST;
+    transport_hdr->PKT_TYPE_8BITS     = 0;
     transport_hdr->FLOW_ID_16BITS     = rte_cpu_to_be_16((uint16_t)(flow_id & 0xffff));
     transport_hdr->DATA_RESEND_16BITS = rte_cpu_to_be_16((uint16_t)(resend_size & 0xffff));
 
@@ -1120,7 +1120,7 @@ construct_resend_request(uint32_t flow_id, uint32_t resend_size)
 }
 
 static void
-process_ack(struct tcp_hdr* transport_recv_hdr, struct ipv4_hdr *ipv4_hdr)
+process_ack(struct tcp_hdr* transport_recv_hdr, struct ipv4_hdr* ipv4_hdr)
 {
     uint16_t datalen = rte_be_to_cpu_16(transport_recv_hdr->DATA_LEN_16BITS);
     uint16_t flow_id = (uint16_t)rte_be_to_cpu_16(transport_recv_hdr->FLOW_ID_16BITS);
@@ -1212,13 +1212,14 @@ recv_grant_request(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr
 }
 
 static void
-recv_oppo_pkt(struct tcp_hdr *transport_recv_hdr)
+recv_oppo_pkt(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr)
 {
     uint16_t flow_id = rte_be_to_cpu_16(transport_recv_hdr->FLOW_ID_16BITS);
+    uint8_t type_of_service = ipv4_hdr->type_of_service;
     receiver_flows[flow_id].receiver_could_echo++;
     construct_grant(flow_id,
                         receiver_flows[flow_id].flow_size+receiver_flows[flow_id].receiver_could_echo*DEFAULT_PKT_SIZE,
-                        ipv4_hdr->type_of_service);
+                        type_of_service);
 }
 
 static void
@@ -1290,7 +1291,7 @@ recv_data(struct tcp_hdr *transport_recv_hdr, struct ipv4_hdr *ipv4_hdr)
 
     /* Drop all data packets if received before the grant requests */
     //if (receiver_flows[flow_id].flow_state < HOMA_RECV_GRANT_SENDING) {
-    if (receiver_flows[flow_id].flow_state < RPO_RECV_SENDING_GRANT) 
+    if (receiver_flows[flow_id].flow_state < RPO_RECV_SENDING_GRANT) { 
         if (verbose > 1) {
             print_elapsed_time();
             printf(" - recv_data of flow %u and dropped due to no grant request\n", flow_id);
@@ -1363,7 +1364,7 @@ recv_pkt(struct fwd_stream *fs)
                     recv_grant_request(transport_recv_hdr, ipv4_hdr);
                     break;
                 case RPO_OPPO_PKT:
-                    recv_oppo_pkt(transport_recv_hdr);
+                    recv_oppo_pkt(transport_recv_hdr, ipv4_hdr);
                     break;
                 case RPO_GRANT:
                     recv_grant(transport_recv_hdr, ipv4_hdr);
@@ -1384,7 +1385,10 @@ send_grant(void)
     }
     for (int i=0; i<max_receiver_active_flow_num; i++) {
         if (receiver_active_flow_array[i] >= 0) {
+            double now = rte_rdtsc() / (double)hz;
+	    uint32_t flow_id = receiver_active_flow_array[i];
             if ((now - receiver_flows[flow_id].last_grant_sent_time) > TIMEOUT) {
+		uint32_t seq_granted = receiver_flows[flow_id].flow_size+receiver_flows[flow_id].receiver_could_echo*DEFAULT_PKT_SIZE;
                 construct_grant(flow_id, seq_granted, 0);
                 receiver_flows[flow_id].last_grant_sent_time = now;
                 receiver_flows[flow_id].last_grant_granted_seq = seq_granted;
